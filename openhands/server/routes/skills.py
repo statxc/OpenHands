@@ -70,9 +70,7 @@ async def list_skills() -> SkillListResponse:
 
     # Load user-level skills
     try:
-        repo_skills, knowledge_skills = load_microagents_from_dir(
-            USER_MICROAGENTS_DIR
-        )
+        repo_skills, knowledge_skills = load_microagents_from_dir(USER_MICROAGENTS_DIR)
         for repo_skill in repo_skills.values():
             skills.append(
                 SkillInfo(
