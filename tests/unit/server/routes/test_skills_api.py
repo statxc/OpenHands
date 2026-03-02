@@ -80,8 +80,8 @@ def test_client():
         yield client
 
 
-def _make_repo_agents():
-    """Create mock repo agents."""
+def _make_repo_skills():
+    """Create mock repo skills."""
     return {
         'test_repo': RepoMicroagent(
             name='test_repo',
@@ -93,8 +93,8 @@ def _make_repo_agents():
     }
 
 
-def _make_knowledge_agents():
-    """Create mock knowledge agents."""
+def _make_knowledge_skills():
+    """Create mock knowledge skills."""
     return {
         'test_knowledge': KnowledgeMicroagent(
             name='test_knowledge',
@@ -113,12 +113,12 @@ def _make_knowledge_agents():
 @pytest.mark.asyncio
 async def test_skills_endpoint_returns_skills(test_client):
     """Test that GET /api/skills returns a list of skills."""
-    repo_agents = _make_repo_agents()
-    knowledge_agents = _make_knowledge_agents()
+    repo_skills = _make_repo_skills()
+    knowledge_skills = _make_knowledge_skills()
 
     with patch(
         'openhands.server.routes.skills.load_microagents_from_dir',
-        return_value=(repo_agents, knowledge_agents),
+        return_value=(repo_skills, knowledge_skills),
     ):
         response = test_client.get('/api/skills')
 
@@ -132,12 +132,12 @@ async def test_skills_endpoint_returns_skills(test_client):
     assert 'test_repo' in skill_names
     assert 'test_knowledge' in skill_names
 
-    # Check knowledge agent has triggers
+    # Check knowledge skill has triggers
     knowledge_skill = next(s for s in data['skills'] if s['name'] == 'test_knowledge')
     assert knowledge_skill['triggers'] == ['testword']
     assert knowledge_skill['type'] == 'knowledge'
 
-    # Check repo agent has no triggers
+    # Check repo skill has no triggers
     repo_skill = next(s for s in data['skills'] if s['name'] == 'test_repo')
     assert repo_skill['triggers'] is None
     assert repo_skill['type'] == 'repo'

@@ -530,14 +530,11 @@ class BashSession:
         # Check if the command is a single command or multiple commands
         splited_commands = split_bash_commands(command)
         if len(splited_commands) > 1:
-            cmd_list = '\n'.join(
-                f'({i + 1}) {cmd}' for i, cmd in enumerate(splited_commands)
-            )
             return ErrorObservation(
                 content=(
                     f'ERROR: Cannot execute multiple commands at once.\n'
                     f'Please run each command separately OR chain them into a single command via && or ;\n'
-                    f'Provided commands:\n{cmd_list}'
+                    f'Provided commands:\n{"\n".join(f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands))}'
                 )
             )
 

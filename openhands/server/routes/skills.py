@@ -2,6 +2,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from openhands.core.logger import openhands_logger as logger
+
+# NOTE: These imports still use the legacy "microagent" naming from shared modules.
+# The underlying APIs will be renamed to "skills" as part of the broader migration.
 from openhands.memory.memory import GLOBAL_MICROAGENTS_DIR, USER_MICROAGENTS_DIR
 from openhands.microagent import load_microagents_from_dir
 from openhands.server.dependencies import get_dependencies
@@ -37,27 +40,27 @@ async def list_skills() -> SkillListResponse:
 
     # Load global skills
     try:
-        repo_agents, knowledge_agents = load_microagents_from_dir(
+        repo_skills, knowledge_skills = load_microagents_from_dir(
             GLOBAL_MICROAGENTS_DIR
         )
-        for repo_agent in repo_agents.values():
+        for repo_skill in repo_skills.values():
             skills.append(
                 SkillInfo(
-                    name=repo_agent.name,
-                    type=repo_agent.type.value,
+                    name=repo_skill.name,
+                    type=repo_skill.type.value,
                     source='global',
                 )
             )
-        for knowledge_agent in knowledge_agents.values():
+        for knowledge_skill in knowledge_skills.values():
             triggers = (
-                knowledge_agent.metadata.triggers
-                if knowledge_agent.metadata.triggers
+                knowledge_skill.metadata.triggers
+                if knowledge_skill.metadata.triggers
                 else None
             )
             skills.append(
                 SkillInfo(
-                    name=knowledge_agent.name,
-                    type=knowledge_agent.type.value,
+                    name=knowledge_skill.name,
+                    type=knowledge_skill.type.value,
                     source='global',
                     triggers=triggers,
                 )
@@ -67,25 +70,27 @@ async def list_skills() -> SkillListResponse:
 
     # Load user-level skills
     try:
-        repo_agents, knowledge_agents = load_microagents_from_dir(USER_MICROAGENTS_DIR)
-        for repo_agent in repo_agents.values():
+        repo_skills, knowledge_skills = load_microagents_from_dir(
+            USER_MICROAGENTS_DIR
+        )
+        for repo_skill in repo_skills.values():
             skills.append(
                 SkillInfo(
-                    name=repo_agent.name,
-                    type=repo_agent.type.value,
+                    name=repo_skill.name,
+                    type=repo_skill.type.value,
                     source='user',
                 )
             )
-        for knowledge_agent in knowledge_agents.values():
+        for knowledge_skill in knowledge_skills.values():
             triggers = (
-                knowledge_agent.metadata.triggers
-                if knowledge_agent.metadata.triggers
+                knowledge_skill.metadata.triggers
+                if knowledge_skill.metadata.triggers
                 else None
             )
             skills.append(
                 SkillInfo(
-                    name=knowledge_agent.name,
-                    type=knowledge_agent.type.value,
+                    name=knowledge_skill.name,
+                    type=knowledge_skill.type.value,
                     source='user',
                     triggers=triggers,
                 )
