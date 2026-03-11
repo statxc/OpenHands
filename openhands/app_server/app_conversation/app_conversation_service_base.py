@@ -219,6 +219,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
             selected_repository: Repository name or None
             project_dir: Project root directory (already resolved via get_project_dir).
             disabled_skills: Optional list of skill names to exclude
+            selected_repository: Repository name or None (used for org config)
+            project_dir: Project root directory (already resolved via get_project_dir).
 
         Returns:
             Updated agent with skills loaded into context
