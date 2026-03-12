@@ -112,15 +112,15 @@ def _make_knowledge_skills():
 
 @pytest.mark.asyncio
 async def test_skills_endpoint_returns_skills(test_client):
-    """Test that GET /api/skills returns a list of skills."""
+    """Test that GET /api/v1/skills returns a list of skills."""
     repo_skills = _make_repo_skills()
     knowledge_skills = _make_knowledge_skills()
 
     with patch(
-        'openhands.server.routes.skills.load_microagents_from_dir',
+        'openhands.app_server.user.skills_router.load_microagents_from_dir',
         return_value=(repo_skills, knowledge_skills),
     ):
-        response = test_client.get('/api/skills')
+        response = test_client.get('/api/v1/skills')
 
     assert response.status_code == 200
     data = response.json()
@@ -147,10 +147,10 @@ async def test_skills_endpoint_returns_skills(test_client):
 async def test_skills_endpoint_handles_missing_dirs(test_client):
     """Test that the endpoint handles missing directories gracefully."""
     with patch(
-        'openhands.server.routes.skills.load_microagents_from_dir',
+        'openhands.app_server.user.skills_router.load_microagents_from_dir',
         side_effect=FileNotFoundError('No such directory'),
     ):
-        response = test_client.get('/api/skills')
+        response = test_client.get('/api/v1/skills')
 
     assert response.status_code == 200
     data = response.json()
@@ -199,10 +199,10 @@ async def test_skills_endpoint_sorted_by_source_then_name(test_client):
             return (user_repo, {})
 
     with patch(
-        'openhands.server.routes.skills.load_microagents_from_dir',
+        'openhands.app_server.user.skills_router.load_microagents_from_dir',
         side_effect=mock_load,
     ):
-        response = test_client.get('/api/skills')
+        response = test_client.get('/api/v1/skills')
 
     assert response.status_code == 200
     data = response.json()

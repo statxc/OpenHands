@@ -9,7 +9,7 @@ from openhands.memory.memory import GLOBAL_MICROAGENTS_DIR, USER_MICROAGENTS_DIR
 from openhands.microagent import load_microagents_from_dir
 from openhands.server.dependencies import get_dependencies
 
-app = APIRouter(prefix='/api', dependencies=get_dependencies())
+router = APIRouter(prefix='/skills', tags=['Skills'], dependencies=get_dependencies())
 
 
 class SkillInfo(BaseModel):
@@ -27,8 +27,8 @@ class SkillListResponse(BaseModel):
     skills: list[SkillInfo]
 
 
-@app.get(
-    '/skills',
+@router.get(
+    '',
     response_model=SkillListResponse,
 )
 async def list_skills() -> SkillListResponse:

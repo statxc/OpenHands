@@ -10,7 +10,7 @@ class SkillsService {
    * Get the list of available skills (global + user skills)
    */
   static async getSkills(): Promise<SkillInfo[]> {
-    const { data } = await openHands.get<SkillListResponse>("/api/skills");
+    const { data } = await openHands.get<SkillListResponse>("/api/v1/skills");
     return data.skills;
   }
 }

@@ -216,11 +216,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
         Args:
             agent: The agent to update
             remote_workspace: AsyncRemoteWorkspace for loading repo skills
-            selected_repository: Repository name or None
-            project_dir: Project root directory (already resolved via get_project_dir).
-            disabled_skills: Optional list of skill names to exclude
             selected_repository: Repository name or None (used for org config)
             project_dir: Project root directory (already resolved via get_project_dir).
+            disabled_skills: Optional list of skill names to exclude
 
         Returns:
             Updated agent with skills loaded into context
