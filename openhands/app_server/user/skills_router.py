@@ -1,15 +1,21 @@
+import os
+from pathlib import Path
+
+import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+import openhands
 from openhands.core.logger import openhands_logger as logger
-
-# NOTE: These imports still use the legacy "microagent" naming from shared modules.
-# The underlying APIs will be renamed to "skills" as part of the broader migration.
-from openhands.memory.memory import GLOBAL_MICROAGENTS_DIR, USER_MICROAGENTS_DIR
-from openhands.microagent import load_microagents_from_dir
 from openhands.server.dependencies import get_dependencies
 
 router = APIRouter(prefix='/skills', tags=['Skills'], dependencies=get_dependencies())
+
+# V1 skill directory paths
+GLOBAL_SKILLS_DIR = Path(
+    os.path.join(os.path.dirname(os.path.dirname(openhands.__file__)), 'skills')
+)
+USER_SKILLS_DIR = Path.home() / '.openhands' / 'microagents'
 
 
 class SkillInfo(BaseModel):
@@ -27,6 +33,73 @@ class SkillListResponse(BaseModel):
     skills: list[SkillInfo]
 
 
+def _parse_skill_frontmatter(file_path: Path) -> dict | None:
+    """Parse YAML frontmatter from a skill markdown file.
+
+    Returns the frontmatter dict, or None if parsing fails.
+    """
+    try:
+        text = file_path.read_text(encoding='utf-8')
+    except Exception:
+        return None
+
+    if not text.startswith('---'):
+        return None
+
+    end = text.find('---', 3)
+    if end == -1:
+        return None
+
+    try:
+        return yaml.safe_load(text[3:end])
+    except yaml.YAMLError:
+        return None
+
+
+def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
+    """Load skill metadata from a directory of markdown files.
+
+    Args:
+        skills_dir: Path to the skills directory.
+        source: Source label ('global' or 'user').
+
+    Returns:
+        List of SkillInfo objects parsed from the directory.
+    """
+    skills: list[SkillInfo] = []
+    if not skills_dir.exists():
+        return skills
+
+    for md_file in skills_dir.rglob('*.md'):
+        if md_file.name == 'README.md':
+            continue
+
+        try:
+            fm = _parse_skill_frontmatter(md_file)
+            if not isinstance(fm, dict):
+                continue
+
+            # Use name from frontmatter, falling back to filename stem
+            name = fm.get('name') or md_file.stem
+
+            # Determine type from frontmatter
+            skill_type = fm.get('type', 'knowledge')
+            triggers = fm.get('triggers') or None
+
+            skills.append(
+                SkillInfo(
+                    name=name,
+                    type=skill_type,
+                    source=source,
+                    triggers=triggers,
+                )
+            )
+        except Exception as e:
+            logger.warning(f'Failed to parse skill file {md_file}: {e}')
+
+    return skills
+
+
 @router.get(
     '',
     response_model=SkillListResponse,
@@ -40,59 +113,13 @@ async def list_skills() -> SkillListResponse:
 
     # Load global skills
     try:
-        repo_skills, knowledge_skills = load_microagents_from_dir(
-            GLOBAL_MICROAGENTS_DIR
-        )
-        for repo_skill in repo_skills.values():
-            skills.append(
-                SkillInfo(
-                    name=repo_skill.name,
-                    type=repo_skill.type.value,
-                    source='global',
-                )
-            )
-        for knowledge_skill in knowledge_skills.values():
-            triggers = (
-                knowledge_skill.metadata.triggers
-                if knowledge_skill.metadata.triggers
-                else None
-            )
-            skills.append(
-                SkillInfo(
-                    name=knowledge_skill.name,
-                    type=knowledge_skill.type.value,
-                    source='global',
-                    triggers=triggers,
-                )
-            )
+        skills.extend(_load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global'))
     except Exception as e:
         logger.warning(f'Failed to load global skills: {e}')
 
     # Load user-level skills
     try:
-        repo_skills, knowledge_skills = load_microagents_from_dir(USER_MICROAGENTS_DIR)
-        for repo_skill in repo_skills.values():
-            skills.append(
-                SkillInfo(
-                    name=repo_skill.name,
-                    type=repo_skill.type.value,
-                    source='user',
-                )
-            )
-        for knowledge_skill in knowledge_skills.values():
-            triggers = (
-                knowledge_skill.metadata.triggers
-                if knowledge_skill.metadata.triggers
-                else None
-            )
-            skills.append(
-                SkillInfo(
-                    name=knowledge_skill.name,
-                    type=knowledge_skill.type.value,
-                    source='user',
-                    triggers=triggers,
-                )
-            )
+        skills.extend(_load_skills_from_dir(USER_SKILLS_DIR, 'user'))
     except Exception as e:
         logger.warning(f'Failed to load user skills: {e}')
 

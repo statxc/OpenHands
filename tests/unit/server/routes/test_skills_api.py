@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,8 +8,6 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.integrations.provider import ProviderToken, ProviderType
-from openhands.microagent.microagent import KnowledgeMicroagent, RepoMicroagent
-from openhands.microagent.types import MicroagentMetadata, MicroagentType
 from openhands.server.app import app
 from openhands.server.user_auth.user_auth import UserAuth
 from openhands.storage.data_models.secrets import Secrets
@@ -80,52 +79,52 @@ def test_client():
         yield client
 
 
-def _make_repo_skills():
-    """Create mock repo skills."""
-    return {
-        'test_repo': RepoMicroagent(
-            name='test_repo',
-            content='Test repo content',
-            metadata=MicroagentMetadata(name='test_repo'),
-            source='/test/test_repo.md',
-            type=MicroagentType.REPO_KNOWLEDGE,
-        ),
-    }
-
-
-def _make_knowledge_skills():
-    """Create mock knowledge skills."""
-    return {
-        'test_knowledge': KnowledgeMicroagent(
-            name='test_knowledge',
-            content='Test knowledge content',
-            metadata=MicroagentMetadata(
-                name='test_knowledge',
-                triggers=['testword'],
-                type=MicroagentType.KNOWLEDGE,
-            ),
-            source='/test/test_knowledge.md',
-            type=MicroagentType.KNOWLEDGE,
-        ),
-    }
+def _write_skill_file(
+    dir_path: Path,
+    name: str,
+    skill_type: str = 'knowledge',
+    triggers: list[str] | None = None,
+) -> None:
+    """Write a mock skill markdown file with frontmatter."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    lines = [
+        '---',
+        f'name: {name}',
+        f'type: {skill_type}',
+    ]
+    if triggers:
+        lines.append('triggers:')
+        for t in triggers:
+            lines.append(f'- {t}')
+    lines.append('---')
+    lines.append(f'{name} content')
+    (dir_path / f'{name}.md').write_text('\n'.join(lines))
 
 
 @pytest.mark.asyncio
-async def test_skills_endpoint_returns_skills(test_client):
+async def test_skills_endpoint_returns_skills(test_client, tmp_path):
     """Test that GET /api/v1/skills returns a list of skills."""
-    repo_skills = _make_repo_skills()
-    knowledge_skills = _make_knowledge_skills()
+    global_dir = tmp_path / 'global'
+    _write_skill_file(global_dir, 'test_repo', skill_type='repo')
+    _write_skill_file(
+        global_dir, 'test_knowledge', skill_type='knowledge', triggers=['testword']
+    )
 
-    with patch(
-        'openhands.app_server.user.skills_router.load_microagents_from_dir',
-        return_value=(repo_skills, knowledge_skills),
+    with (
+        patch(
+            'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
+        ),
+        patch(
+            'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
+            tmp_path / 'nonexistent',
+        ),
     ):
         response = test_client.get('/api/v1/skills')
 
     assert response.status_code == 200
     data = response.json()
     assert 'skills' in data
-    assert len(data['skills']) >= 2
+    assert len(data['skills']) == 2
 
     # Verify skill structure
     skill_names = [s['name'] for s in data['skills']]
@@ -133,7 +132,9 @@ async def test_skills_endpoint_returns_skills(test_client):
     assert 'test_knowledge' in skill_names
 
     # Check knowledge skill has triggers
-    knowledge_skill = next(s for s in data['skills'] if s['name'] == 'test_knowledge')
+    knowledge_skill = next(
+        s for s in data['skills'] if s['name'] == 'test_knowledge'
+    )
     assert knowledge_skill['triggers'] == ['testword']
     assert knowledge_skill['type'] == 'knowledge'
 
@@ -144,11 +145,17 @@ async def test_skills_endpoint_returns_skills(test_client):
 
 
 @pytest.mark.asyncio
-async def test_skills_endpoint_handles_missing_dirs(test_client):
+async def test_skills_endpoint_handles_missing_dirs(test_client, tmp_path):
     """Test that the endpoint handles missing directories gracefully."""
-    with patch(
-        'openhands.app_server.user.skills_router.load_microagents_from_dir',
-        side_effect=FileNotFoundError('No such directory'),
+    with (
+        patch(
+            'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR',
+            tmp_path / 'no_such_dir',
+        ),
+        patch(
+            'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
+            tmp_path / 'also_missing',
+        ),
     ):
         response = test_client.get('/api/v1/skills')
 
@@ -158,49 +165,22 @@ async def test_skills_endpoint_handles_missing_dirs(test_client):
 
 
 @pytest.mark.asyncio
-async def test_skills_endpoint_sorted_by_source_then_name(test_client):
+async def test_skills_endpoint_sorted_by_source_then_name(test_client, tmp_path):
     """Test that skills are sorted by source (global first) then by name."""
-    global_repo = {
-        'z_global': RepoMicroagent(
-            name='z_global',
-            content='content',
-            metadata=MicroagentMetadata(name='z_global'),
-            source='/test/z_global.md',
-            type=MicroagentType.REPO_KNOWLEDGE,
-        ),
-        'a_global': RepoMicroagent(
-            name='a_global',
-            content='content',
-            metadata=MicroagentMetadata(name='a_global'),
-            source='/test/a_global.md',
-            type=MicroagentType.REPO_KNOWLEDGE,
-        ),
-    }
-    user_repo = {
-        'b_user': RepoMicroagent(
-            name='b_user',
-            content='content',
-            metadata=MicroagentMetadata(name='b_user'),
-            source='/test/b_user.md',
-            type=MicroagentType.REPO_KNOWLEDGE,
-        ),
-    }
+    global_dir = tmp_path / 'global'
+    user_dir = tmp_path / 'user'
 
-    call_count = 0
+    _write_skill_file(global_dir, 'z_global', skill_type='repo')
+    _write_skill_file(global_dir, 'a_global', skill_type='repo')
+    _write_skill_file(user_dir, 'b_user', skill_type='repo')
 
-    def mock_load(dir_path):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            # First call is for global dir
-            return (global_repo, {})
-        else:
-            # Second call is for user dir
-            return (user_repo, {})
-
-    with patch(
-        'openhands.app_server.user.skills_router.load_microagents_from_dir',
-        side_effect=mock_load,
+    with (
+        patch(
+            'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
+        ),
+        patch(
+            'openhands.app_server.user.skills_router.USER_SKILLS_DIR', user_dir
+        ),
     ):
         response = test_client.get('/api/v1/skills')
 
