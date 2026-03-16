@@ -20,6 +20,9 @@ const getSettingsQueryFn = async (): Promise<Settings> => {
     disabled_skills:
       settings.disabled_skills ?? DEFAULT_SETTINGS.disabled_skills,
     v1_enabled: settings.v1_enabled ?? DEFAULT_SETTINGS.v1_enabled,
+    sandbox_grouping_strategy:
+      settings.sandbox_grouping_strategy ??
+      DEFAULT_SETTINGS.sandbox_grouping_strategy,
   };
 };
 

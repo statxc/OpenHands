@@ -59,6 +59,9 @@ from openhands.app_server.event_callback.event_callback_service import (
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
+from openhands.app_server.pending_messages.pending_message_service import (
+    PendingMessageService,
+)
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -88,6 +91,7 @@ from openhands.sdk.utils.paging import page_iterator
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 from openhands.server.types import AppMode
 from openhands.storage.data_models.conversation_metadata import ConversationTrigger
+from openhands.storage.data_models.settings import SandboxGroupingStrategy
 from openhands.tools.preset.default import (
     get_default_tools,
 )
@@ -126,14 +130,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     sandbox_service: SandboxService
     sandbox_spec_service: SandboxSpecService
     jwt_service: JwtService
+    pending_message_service: PendingMessageService
     sandbox_startup_timeout: int
     sandbox_startup_poll_frequency: int
+    max_num_conversations_per_sandbox: int
     httpx_client: httpx.AsyncClient
     web_url: str | None
     openhands_provider_base_url: str | None
     access_token_hard_timeout: timedelta | None
     app_mode: str | None = None
     tavily_api_key: str | None = None
+
+    async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
+        """Get the sandbox grouping strategy from user settings."""
+        user_info = await self.user_context.get_user_info()
+        return user_info.sandbox_grouping_strategy
 
     async def search_app_conversations(
         self,
@@ -255,11 +266,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             assert sandbox_spec is not None
 
+            # Set up conversation id
+            conversation_id = request.conversation_id or uuid4()
+
+            # Setup working dir based on grouping
+            working_dir = sandbox_spec.working_dir
+            sandbox_grouping_strategy = await self._get_sandbox_grouping_strategy()
+            if sandbox_grouping_strategy != SandboxGroupingStrategy.NO_GROUPING:
+                working_dir = f'{working_dir}/{conversation_id.hex}'
+
             # Run setup scripts
             remote_workspace = AsyncRemoteWorkspace(
                 host=agent_server_url,
                 api_key=sandbox.session_api_key,
-                working_dir=sandbox_spec.working_dir,
+                working_dir=working_dir,
             )
             async for updated_task in self.run_setup_scripts(
                 task, sandbox, remote_workspace, agent_server_url
@@ -270,13 +290,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             start_conversation_request = (
                 await self._build_start_conversation_request_for_user(
                     sandbox,
+                    conversation_id,
                     request.initial_message,
                     request.system_message_suffix,
                     request.git_provider,
-                    sandbox_spec.working_dir,
+                    working_dir,
                     request.agent_type,
                     request.llm_model,
-                    request.conversation_id,
                     remote_workspace=remote_workspace,
                     selected_repository=request.selected_repository,
                     plugins=request.plugins,
@@ -356,6 +376,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             task.status = AppConversationStartTaskStatus.READY
             task.app_conversation_id = info.id
             yield task
+
+            # Process any pending messages queued while waiting for conversation
+            if sandbox.session_api_key:
+                await self._process_pending_messages(
+                    task_id=task.id,
+                    conversation_id=info.id,
+                    agent_server_url=agent_server_url,
+                    session_api_key=sandbox.session_api_key,
+                )
 
         except Exception as exc:
             _logger.exception('Error starting conversation', stack_info=True)
@@ -495,21 +524,157 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 result[stored_conversation.sandbox_id].append(stored_conversation.id)
         return result
 
+    async def _find_running_sandbox_for_user(self) -> SandboxInfo | None:
+        """Find a running sandbox for the current user based on the grouping strategy.
+
+        Returns:
+            SandboxInfo if a running sandbox is found, None otherwise.
+        """
+        try:
+            user_id = await self.user_context.get_user_id()
+            sandbox_grouping_strategy = await self._get_sandbox_grouping_strategy()
+
+            # If no grouping, return None to force creation of a new sandbox
+            if sandbox_grouping_strategy == SandboxGroupingStrategy.NO_GROUPING:
+                return None
+
+            # Collect all running sandboxes for this user
+            running_sandboxes = []
+            page_id = None
+            while True:
+                page = await self.sandbox_service.search_sandboxes(
+                    page_id=page_id, limit=100
+                )
+
+                for sandbox in page.items:
+                    if (
+                        sandbox.status == SandboxStatus.RUNNING
+                        and sandbox.created_by_user_id == user_id
+                    ):
+                        running_sandboxes.append(sandbox)
+
+                if page.next_page_id is None:
+                    break
+                page_id = page.next_page_id
+
+            if not running_sandboxes:
+                return None
+
+            # Apply the grouping strategy
+            return await self._select_sandbox_by_strategy(
+                running_sandboxes, sandbox_grouping_strategy
+            )
+
+        except Exception as e:
+            _logger.warning(
+                f'Error finding running sandbox for user: {e}', exc_info=True
+            )
+            return None
+
+    async def _select_sandbox_by_strategy(
+        self,
+        running_sandboxes: list[SandboxInfo],
+        sandbox_grouping_strategy: SandboxGroupingStrategy,
+    ) -> SandboxInfo | None:
+        """Select a sandbox from the list based on the configured grouping strategy.
+
+        Args:
+            running_sandboxes: List of running sandboxes for the user
+            sandbox_grouping_strategy: The strategy to use for selection
+
+        Returns:
+            Selected sandbox based on the strategy, or None if no sandbox is available
+            (e.g., all sandboxes have reached max_num_conversations_per_sandbox)
+        """
+        # Get conversation counts for filtering by max_num_conversations_per_sandbox
+        sandbox_conversation_counts = await self._get_conversation_counts_by_sandbox(
+            [s.id for s in running_sandboxes]
+        )
+
+        # Filter out sandboxes that have reached the max number of conversations
+        available_sandboxes = [
+            s
+            for s in running_sandboxes
+            if sandbox_conversation_counts.get(s.id, 0)
+            < self.max_num_conversations_per_sandbox
+        ]
+
+        if not available_sandboxes:
+            # All sandboxes have reached the max - need to create a new one
+            return None
+
+        if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
+            # Return the first available sandbox
+            return available_sandboxes[0]
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.GROUP_BY_NEWEST:
+            # Return the most recently created sandbox
+            return max(available_sandboxes, key=lambda s: s.created_at)
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.LEAST_RECENTLY_USED:
+            # Return the least recently created sandbox (oldest)
+            return min(available_sandboxes, key=lambda s: s.created_at)
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.FEWEST_CONVERSATIONS:
+            # Return the one with fewest conversations
+            return min(
+                available_sandboxes,
+                key=lambda s: sandbox_conversation_counts.get(s.id, 0),
+            )
+
+        else:
+            # Default fallback - return first sandbox
+            return available_sandboxes[0]
+
+    async def _get_conversation_counts_by_sandbox(
+        self, sandbox_ids: list[str]
+    ) -> dict[str, int]:
+        """Get the count of conversations for each sandbox.
+
+        Args:
+            sandbox_ids: List of sandbox IDs to count conversations for
+
+        Returns:
+            Dictionary mapping sandbox_id to conversation count
+        """
+        try:
+            # Query count for each sandbox individually
+            # This is efficient since there are at most ~8 running sandboxes per user
+            counts: dict[str, int] = {}
+            for sandbox_id in sandbox_ids:
+                count = await self.app_conversation_info_service.count_app_conversation_info(
+                    sandbox_id__eq=sandbox_id
+                )
+                counts[sandbox_id] = count
+            return counts
+        except Exception as e:
+            _logger.warning(
+                f'Error counting conversations by sandbox: {e}', exc_info=True
+            )
+            # Return empty counts on error - will default to first sandbox
+            return {}
+
     async def _wait_for_sandbox_start(
         self, task: AppConversationStartTask
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         """Wait for sandbox to start and return info."""
         # Get or create the sandbox
         if not task.request.sandbox_id:
-            # Convert conversation_id to hex string if present
-            sandbox_id_str = (
-                task.request.conversation_id.hex
-                if task.request.conversation_id is not None
-                else None
-            )
-            sandbox = await self.sandbox_service.start_sandbox(
-                sandbox_id=sandbox_id_str
-            )
+            # First try to find a running sandbox for the current user
+            sandbox = await self._find_running_sandbox_for_user()
+            if sandbox is None:
+                # No running sandbox found, start a new one
+
+                # Convert conversation_id to hex string if present
+                sandbox_id_str = (
+                    task.request.conversation_id.hex
+                    if task.request.conversation_id is not None
+                    else None
+                )
+
+                sandbox = await self.sandbox_service.start_sandbox(
+                    sandbox_id=sandbox_id_str
+                )
             task.sandbox_id = sandbox.id
         else:
             sandbox_info = await self.sandbox_service.get_sandbox(
@@ -1133,7 +1298,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _finalize_conversation_request(
         self,
         agent: Agent,
-        conversation_id: UUID | None,
+        conversation_id: UUID,
         user: UserInfo,
         workspace: LocalWorkspace,
         initial_message: SendMessageRequest | None,
@@ -1216,13 +1381,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _build_start_conversation_request_for_user(
         self,
         sandbox: SandboxInfo,
+        conversation_id: UUID,
         initial_message: SendMessageRequest | None,
         system_message_suffix: str | None,
         git_provider: ProviderType | None,
         working_dir: str,
         agent_type: AgentType = AgentType.DEFAULT,
         llm_model: str | None = None,
-        conversation_id: UUID | None = None,
         remote_workspace: AsyncRemoteWorkspace | None = None,
         selected_repository: str | None = None,
         plugins: list[PluginSpec] | None = None,
@@ -1275,6 +1440,89 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository,
             project_dir,
             plugins=plugins,
+        )
+
+    async def _process_pending_messages(
+        self,
+        task_id: UUID,
+        conversation_id: UUID,
+        agent_server_url: str,
+        session_api_key: str,
+    ) -> None:
+        """Process pending messages queued before conversation was ready.
+
+        Messages are delivered concurrently to the agent server. After processing,
+        all messages are deleted from the database regardless of success or failure.
+
+        Args:
+            task_id: The start task ID (may have been used as conversation_id initially)
+            conversation_id: The real conversation ID
+            agent_server_url: URL of the agent server
+            session_api_key: API key for authenticating with agent server
+        """
+        # Convert UUIDs to strings for the pending message service
+        # The frontend uses task-{uuid.hex} format (no hyphens), matching OpenHandsUUID serialization
+        task_id_str = f'task-{task_id.hex}'
+        # conversation_id uses standard format (with hyphens) for agent server API compatibility
+        conversation_id_str = str(conversation_id)
+
+        _logger.info(f'task_id={task_id_str} conversation_id={conversation_id_str}')
+
+        # First, update any messages that were queued with the task_id
+        updated_count = await self.pending_message_service.update_conversation_id(
+            old_conversation_id=task_id_str,
+            new_conversation_id=conversation_id_str,
+        )
+        _logger.info(f'updated_count={updated_count} ')
+        if updated_count > 0:
+            _logger.info(
+                f'Updated {updated_count} pending messages from task_id={task_id_str} '
+                f'to conversation_id={conversation_id_str}'
+            )
+
+        # Get all pending messages for this conversation
+        pending_messages = await self.pending_message_service.get_pending_messages(
+            conversation_id_str
+        )
+
+        if not pending_messages:
+            return
+
+        _logger.info(
+            f'Processing {len(pending_messages)} pending messages for '
+            f'conversation {conversation_id_str}'
+        )
+
+        # Process messages sequentially to preserve order
+        for msg in pending_messages:
+            try:
+                # Serialize content objects to JSON-compatible dicts
+                content_json = [item.model_dump() for item in msg.content]
+                # Use the events endpoint which handles message sending
+                response = await self.httpx_client.post(
+                    f'{agent_server_url}/api/conversations/{conversation_id_str}/events',
+                    json={
+                        'role': msg.role,
+                        'content': content_json,
+                        'run': True,
+                    },
+                    headers={'X-Session-API-Key': session_api_key},
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                _logger.debug(f'Delivered pending message {msg.id}')
+            except Exception as e:
+                _logger.warning(f'Failed to deliver pending message {msg.id}: {e}')
+
+        # Delete all pending messages after processing (regardless of success/failure)
+        deleted_count = (
+            await self.pending_message_service.delete_messages_for_conversation(
+                conversation_id_str
+            )
+        )
+        _logger.info(
+            f'Finished processing pending messages for conversation {conversation_id_str}. '
+            f'Deleted {deleted_count} messages.'
         )
 
     async def update_agent_server_conversation_title(
@@ -1619,6 +1867,10 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     sandbox_startup_poll_frequency: int = Field(
         default=2, description='The frequency to poll for sandbox readiness'
     )
+    max_num_conversations_per_sandbox: int = Field(
+        default=20,
+        description='The maximum number of conversations allowed per sandbox',
+    )
     init_git_in_empty_workspace: bool = Field(
         default=True,
         description='Whether to initialize a git repo when the workspace is empty',
@@ -1645,6 +1897,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             get_global_config,
             get_httpx_client,
             get_jwt_service,
+            get_pending_message_service,
             get_sandbox_service,
             get_sandbox_spec_service,
             get_user_context,
@@ -1664,6 +1917,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             get_event_service(state, request) as event_service,
             get_jwt_service(state, request) as jwt_service,
             get_httpx_client(state, request) as httpx_client,
+            get_pending_message_service(state, request) as pending_message_service,
         ):
             access_token_hard_timeout = None
             if self.access_token_hard_timeout:
@@ -1708,8 +1962,10 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 event_callback_service=event_callback_service,
                 event_service=event_service,
                 jwt_service=jwt_service,
+                pending_message_service=pending_message_service,
                 sandbox_startup_timeout=self.sandbox_startup_timeout,
                 sandbox_startup_poll_frequency=self.sandbox_startup_poll_frequency,
+                max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
                 httpx_client=httpx_client,
                 web_url=web_url,
                 openhands_provider_base_url=config.openhands_provider_base_url,
