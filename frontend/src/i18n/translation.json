@@ -18578,7 +18578,8 @@
     "pt": "Habilidades",
     "es": "Habilidades",
     "tr": "Yetenekler",
-    "uk": "Навички"
+    "uk": "Навички",
+    "ca": "Habilitats"
   },
   "SETTINGS$SKILLS_TITLE": {
     "en": "Skills",
@@ -18594,7 +18595,8 @@
     "pt": "Habilidades",
     "es": "Habilidades",
     "tr": "Yetenekler",
-    "uk": "Навички"
+    "uk": "Навички",
+    "ca": "Habilitats"
   },
   "SETTINGS$SKILLS_DESCRIPTION": {
     "en": "Enable or disable default skills. Disabled skills will not be loaded into agent context.",
@@ -18610,7 +18612,8 @@
     "pt": "Ativar ou desativar habilidades padrão (micro-agentes). Habilidades desativadas não serão carregadas no contexto do agente.",
     "es": "Habilitar o deshabilitar habilidades predeterminadas (micro-agentes). Las habilidades deshabilitadas no se cargarán en el contexto del agente.",
     "tr": "Varsayılan yetenekleri (mikro ajanlar) etkinleştirin veya devre dışı bırakın. Devre dışı bırakılan yetenekler ajan bağlamına yüklenmez.",
-    "uk": "Увімкніть або вимкніть навички за замовчуванням (мікроагенти). Вимкнені навички не завантажуватимуться в контекст агента."
+    "uk": "Увімкніть або вимкніть навички за замовчуванням (мікроагенти). Вимкнені навички не завантажуватимуться в контекст агента.",
+    "ca": "Activeu o desactiveu les habilitats predeterminades. Les habilitats desactivades no es carregaran al context de l'agent."
   },
   "SETTINGS$SKILLS_NO_SKILLS": {
     "en": "No skills found.",
@@ -18626,7 +18629,8 @@
     "pt": "Nenhuma habilidade encontrada.",
     "es": "No se encontraron habilidades.",
     "tr": "Yetenek bulunamadı.",
-    "uk": "Навички не знайдено."
+    "uk": "Навички не знайдено.",
+    "ca": "No s'han trobat habilitats."
   },
   "SETTINGS$SKILLS_TRIGGERS": {
     "en": "Triggers: {{triggers}}",
@@ -18642,7 +18646,8 @@
     "pt": "Gatilhos: {{triggers}}",
     "es": "Disparadores: {{triggers}}",
     "tr": "Tetikleyiciler: {{triggers}}",
-    "uk": "Тригери: {{triggers}}"
+    "uk": "Тригери: {{triggers}}",
+    "ca": "Activadors: {{triggers}}"
   },
   "HOOKS_MODAL$TITLE": {
     "en": "Available Hooks",
