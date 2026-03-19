@@ -534,8 +534,7 @@ class BashSession:
                 content=(
                     f'ERROR: Cannot execute multiple commands at once.\n'
                     f'Please run each command separately OR chain them into a single command via && or ;\n'
-                    'Provided commands:\n'
-                    + '\n'.join(f'({i + 1}) {cmd}' for i, cmd in enumerate(splited_commands))
+                    f'Provided commands:\n{"\n".join(f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands))}'
                 )
             )
 
